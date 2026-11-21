@@ -7,7 +7,7 @@ Specifications for Managed Strings, Second Edition:
 https://apps.dtic.mil/sti/tr/pdf/ADA528573.pdf
 
 
-Managed C strings libraries:
+stricks libraries:
 
 
 https://github.com/alcover/stricks

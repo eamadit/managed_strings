@@ -475,42 +475,39 @@ run /test2.msh
 ------------------------------------------------------------------------------------
 
 
-Your test works as a three-stage pipeline: test2.msh feeds commands into msh (PID 1), msh dispatches them to compiled C functions in init.c and msh_extra_tests.c, and libstring_m.a intercepts any unsafe operation via your custom pid1_fault_handler before it can crash the OS.
-Here is the step-by-step lifecycle of what happens when you type run /test2.msh in QEMU:
 
-1. Boot & Safety Net Setup (main() in init.c)
+## How the Test Pipeline Works
 
-• When QEMU boots the Linux kernel with initramfs.cpio.gz, the kernel mounts the RAM disk as / and executes /init as PID 1.
-• The very first line of main() calls set_constraint_handler_m(pid1_fault_handler). This replaces the default abort() behavior with your custom non-allocating function that simply writes [SHIELD BLOCKED] <reason> to stderr (fd 2) and returns control safely instead of killing PID 1.
+The test runs as a three-stage pipeline: `test2.msh` feeds commands into `msh` (**PID 1**), `msh` dispatches them to compiled C functions in `init.c` and `msh_extra_tests.c`, and `libstring_m.a` intercepts any unsafe operation via a custom `pid1_fault_handler` before it can crash the OS.
 
-2. Script Reading (msh_run_script() in init.c)
+Below is the step-by-step lifecycle of what happens when you run `run /test2.msh` inside QEMU:
 
-• When you type run /test2.msh, msh_exec_line() opens /test2.msh inside the RAM disk (open(path, O_RDONLY)).
-• It reads the file one byte at a time into a 512-byte buffer (line) until it hits \n, then passes each line to msh_exec_line(cmd, line).
+### 1. Boot & Safety Net Setup (`main()` in `init.c`)
+* When QEMU boots the Linux kernel with `initramfs.cpio.gz`, the kernel mounts the RAM disk as `/` and executes `/init` as **PID 1**.
+* The first line of `main()` registers `set_constraint_handler_m(pid1_fault_handler)`. This overrides the default `abort()` behavior with a non-allocating handler that writes `[SHIELD BLOCKED] <reason>` to `stderr` (`fd 2`) and returns control safely instead of terminating PID 1.
 
-3. Command Execution & Exploit Interception ([1/9] to [9/9])
+### 2. Script Reading (`msh_run_script()` in `init.c`)
+* Typing `run /test2.msh` prompts `msh_exec_line()` to open `/test2.msh` inside the RAM disk via `open(path, O_RDONLY)`.
+* It reads the file one byte at a time into a 512-byte buffer (`line`) until a newline (`\n`) is reached, passing each line to `msh_exec_line(cmd, line)`.
 
-Each line in test2.msh triggers one of three behaviors inside your C code:
-• Normal Commands (status, help, echo ... — [1/9]):
-cstrcpy_m(cmd, raw) copies the line into the 256-byte managed string cmd, and cstrcmp_m / cstrncmp_m safely compare the command and print output.
-• Buffer Overflow Test ([2/9]):
-test2.msh passes a 257-character echo AAAA...AB line. cstrcpy_m(cmd, raw) sees 262 > 256 (cmd->maxlen), refuses to copy a single byte, calls pid1_fault_handler ([SHIELD BLOCKED] strncpy_m: limit/set), and returns an error so msh_exec_line skips the line cleanly.
-• Compiled C Audit Suites (audit and extra — [3/9] to [9/9]):
-	• [3/9] Charset Injection: strcreate_m locks env to A-Z_. When cstrcat_m(env, ";rm -rf /") runs, sm_validate_cset_n detects ; is not in the allow-list and blocks the append.
-	• [4/9] Immutability: const_strcreate_m sets ver->is_const = true. Calling cstrcpy_m on ver is immediately rejected.
-	• [5/9] Path Slicing & UTF-8: strtok_m splits "usr/local/bin" on "/" iteratively, and wstrcat_m promotes env from char * to wide wchar_t *.
-	• [7/9] 5,000-Level Path Bomb: Builds a 10,000-byte path ("a/a/.../a") and counts all 5,000 levels in a single while loop using cchar_m (O(1) stack depth, zero recursion).
-	• [8/9] 200-Level Shell Bomb: Scans 200 nested $($(... tokens in a flat while loop and halts as soon as depth > 16.
-	• [9/9] Graph DB Shield: Locks the node label "Person" with const_strcreate_m, restricts property prop ("alice") to [a-z0-9_], blocks '}) DETACH DELETE n //, and confirms strlen_m still reports 5 in O(1) time.
+### 3. Command Execution & Exploit Interception (`[1/9]` to `[9/9]`)
+Each line in `test2.msh` triggers one of three execution paths in C:
+
+* **Normal Commands (`status`, `help`, `echo ...` — `[1/9]`):**
+  `cstrcpy_m(cmd, raw)` copies the input into the 256-byte managed string `cmd`, while `cstrcmp_m` and `cstrncmp_m` safely match commands and print output.
+* **Buffer Overflow Test (`[2/9]`):**
+  `test2.msh` sends a 257-character `echo AAAA...AB` line. `cstrcpy_m(cmd, raw)` detects `262 > 256` (`cmd->maxlen`), refuses to copy a single byte, triggers `pid1_fault_handler` (`[SHIELD BLOCKED] strncpy_m: limit/set`), and returns an error so `msh_exec_line` skips the line cleanly.
+* **Compiled C Audit Suites (`audit` and `extra` — `[3/9]` to `[9/9]`):**
+  * **`[3/9]` Charset Injection:** `strcreate_m` restricts `env` to `A-Z_`. When `cstrcat_m(env, ";rm -rf /")` executes, `sm_validate_cset_n` detects that `;` is outside the allow-list and blocks the append.
+  * **`[4/9]` Immutability:** `const_strcreate_m` sets `ver->is_const = true`, immediately rejecting `cstrcpy_m` overwrite attempts on `ver`.
+  * **`[5/9]` Path Slicing & UTF-8:** `strtok_m` splits `"usr/local/bin"` on `"/"` iteratively, and `wstrcat_m` promotes `env` from `char *` to wide `wchar_t *`.
+  * **`[6/9]` Stack & Heap Integrity:** Confirms PID 1 memory remains uncorrupted after consecutive fault triggers.
+  * **`[7/9]` 5,000-Level Path Bomb:** Constructs a 10,000-byte path (`"a/a/.../a"`) and counts all 5,000 levels in a single `while` loop using `cchar_m` (`O(1)` stack depth, zero recursion).
+  * **`[8/9]` 200-Level Shell Bomb:** Scans 200 nested `$($(...` tokens in a flat `while` loop and halts immediately when `depth > 16`.
+  * **`[9/9]` Graph DB Shield:** Locks the node label `"Person"` with `const_strcreate_m`, restricts property `prop` (`"alice"`) to `[a-z0-9_]`, blocks `'}) DETACH DELETE n //`, and confirms `strlen_m` still reports `5` in `O(1)` time.
 
 
 
-
-------------------------------------------------------------------------------------
-
-------------------------------------------------------------------------------------
-
-------------------------------------------------------------------------------------
 
 ------------------------------------------------------------------------------------
 
@@ -518,24 +515,28 @@ test2.msh passes a 257-character echo AAAA...AB line. cstrcpy_m(cmd, raw) sees 2
 
 ------------------------------------------------------------------------------------
 
+------------------------------------------------------------------------------------
 
-11 public functions (plus 3 internal helper functions called under the hood) from your managed strings library are exercised during run /test2.msh.
+------------------------------------------------------------------------------------
 
-The 11 Public Functions Called Directly in test2.msh
-
-1. set_constraint_handler_m — Registers pid1_fault_handler at boot so constraint violations log [SHIELD BLOCKED] instead of crashing PID 1.
-2. strcreate_m — Allocates managed strings with strict maxlen bounds and charset allow-lists (cmd, env, tok, rem, path, expr, prop).
-3. const_strcreate_m — Creates immutable strings (ver in [4/9] and label in [9/9]) to block memory overwrites.
-4. strdelete_m — Frees managed string structs and their internal buffers (cmd, path, expr, label, prop).
-5. strlen_m — Retrieves string length in O(1) time without scanning for \0 ([7/9], [8/9], [9/9]).
-6. cstrcpy_m — Safely copies C strings into cmd and tests immutability protection on ver ([1/9], [2/9], [4/9]).
-7. cstrcat_m — Safely appends C strings while enforcing maxlen and charset allow-lists ([3/9], [7/9], [8/9], [9/9]).
-8. wstrcat_m — Promotes a narrow char * string to a wide UTF-8 wchar_t * string ([5/9]).
-9. cstrcmp_m — Compares commands (help, status, audit, extra) safely ([1/9]).
-10. cstrncmp_m — Matches command prefixes (echo , run ) safely ([1/9], [2/9]).
-11. strtok_m — Splits path segments iteratively ([5/9]).
-12. cchar_m — Reads individual characters by index with bounds checking ([7/9] and [8/9]).
-(That is 12 public functions in total—11 from Sections 3.1–3.9 of CMU/SEI-2010-TR-018 plus set_constraint_handler_m from Section 2.2—which also automatically invoke strncpy_m, strncat_m, strslice_m, and wstrcreate_m internally.)
+------------------------------------------------------------------------------------
 
 
+## Exercised API Functions (`run /test2.msh`)
 
+**12 public functions** (plus 4 internal managed-string functions invoked under the hood) are exercised during `run /test2.msh`:
+
+1. **`set_constraint_handler_m`** — Registers `pid1_fault_handler` at boot so constraint violations log `[SHIELD BLOCKED]` instead of crashing PID 1.
+2. **`strcreate_m`** — Allocates managed strings with strict `maxlen` bounds and `charset` allow-lists (`cmd`, `env`, `tok`, `rem`, `path`, `expr`, `prop`).
+3. **`const_strcreate_m`** — Creates immutable strings (`ver` in `[4/9]` and `label` in `[9/9]`) to block memory overwrites.
+4. **`strdelete_m`** — Frees managed string structs and their internal buffers (`cmd`, `path`, `expr`, `label`, `prop`).
+5. **`strlen_m`** — Retrieves string length in `O(1)` time without scanning for `\0` (`[7/9]`, `[8/9]`, `[9/9]`).
+6. **`cstrcpy_m`** — Safely copies C strings into `cmd` and tests immutability protection on `ver` (`[1/9]`, `[2/9]`, `[4/9]`).
+7. **`cstrcat_m`** — Safely appends C strings while enforcing `maxlen` and `charset` allow-lists (`[3/9]`, `[7/9]`, `[8/9]`, `[9/9]`).
+8. **`wstrcat_m`** — Promotes a narrow `char *` string to a wide UTF-8 `wchar_t *` string (`[5/9]`).
+9. **`cstrcmp_m`** — Compares commands (`help`, `status`, `audit`, `extra`) safely (`[1/9]`).
+10. **`cstrncmp_m`** — Matches command prefixes (`echo `, `run `) safely (`[1/9]`, `[2/9]`).
+11. **`strtok_m`** — Splits path segments iteratively (`[5/9]`).
+12. **`cchar_m`** — Reads individual characters by index with bounds checking (`[7/9]` and `[8/9]`).
+
+> **Note:** That totals **12 public functions**—11 from Sections 3.1–3.9 of `CMU/SEI-2010-TR-018` plus `set_constraint_handler_m` from Section 2.2—which also automatically invoke `strncpy_m`, `strncat_m`, `strslice_m`, and `wstrcreate_m` internally.

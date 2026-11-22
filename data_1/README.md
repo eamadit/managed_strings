@@ -195,3 +195,150 @@ What would you like to build next on top of libstring_m.a?
 • Iterative VFS Path Walker (sm_walk_path) using a bounded heap queue and strtok_m (42 Norm-compliant, formatted without tables for ONLYOFFICE)
 • Bounded msh Shell Command Parser with an explicit nesting-depth state machine
 • Expanded unit tests covering wide-character fprintf_m/fscanf_m streams and const_strcreate_m immutability checks
+
+
+
+
+
+
+gpg --keyserver hkps://keyserver.ubuntu.com --recv-keys 836489290BB6B70F99FFDA0556BCDB593020450F
+ls
+cd musl/
+ls
+gpg --verify musl-1.2.6.tar.gz.asc musl-1.2.6.tar.gz
+tar -xzf musl-1.2.6.tar.gz
+cd musl-1.2.6
+./configure --prefix=/opt/musl --syslibdir=/opt/musl/lib
+cd /data/musl/musl-1.2.6
+./configure --prefix=/opt/musl --syslibdir=/opt/musl/lib
+make -j$(nproc)
+make install DESTDIR=/data/musl/install
+##(Note: Because --prefix was /opt/musl, DESTDIR=/data/musl/install places everything cleanly inside /data/musl/install/opt/musl/.)##
+
+# 1. Point musl-gcc.specs to your user-owned install folder
+sed -i 's|/opt/musl|/data/musl/install/opt/musl|g' /data/musl/install/opt/musl/lib/musl-gcc.specs
+
+
+
+
+
+make install DESTDIR=/data/musl/install
+  513  sed -i 's|/opt/musl|/data/musl/install/opt/musl|g' /data/musl/install/opt/musl/lib/musl-gcc.specs
+  514  cd /data/managed_strings_42-0.4
+  515  make re CC=/data/musl/install/opt/musl/bin/musl-gcc
+  516  sed -i 's|/opt/musl|/data/musl/install/opt/musl|g'   /data/musl/install/opt/musl/bin/musl-gcc   /data/musl/install/opt/musl/lib/musl-gcc.specs
+  517  cat /data/musl/install/opt/musl/bin/musl-gcc
+  518  make re CC=/data/musl/install/opt/musl/bin/musl-gcc
+  519  make -C /data/musl/musl-1.2.6 install-headers install-libs DESTDIR=/data/musl/install
+  520  ls /data/musl/install/opt/musl/include/errno.h && sed -i 's|/opt/musl|/data/musl/install/opt/musl|g' /data/musl/install/opt/musl/lib/musl-gcc.specs
+  521  make re CC=/data/musl/install/opt/musl/bin/musl-gcc
+  522  /data/musl/musl-1.2.6/tools/musl-gcc.specs.sh   /data/musl/install/opt/musl/include   /data/musl/install/opt/musl/lib   /data/musl/install/opt/musl/lib/ld-musl-x86_64.so.1   > /data/musl/install/opt/musl/lib/musl-gcc.specs
+  523  sh /data/musl/musl-1.2.6/tools/musl-gcc.specs.sh   /data/musl/install/opt/musl/include   /data/musl/install/opt/musl/lib   /data/musl/install/opt/musl/lib/ld-musl-x86_64.so.1   > /data/musl/install/opt/musl/lib/musl-gcc.specs && make re CC=/data/musl/install/opt/musl/bin/musl-gcc
+
+
+
+
+  # 2. Go to your managed_strings directory and build with musl-gcc
+cd /data/managed_strings_42-0.4
+make re CC=/data/musl/install/opt/musl/bin/musl-gcc
+
+# 3. Compile your static PID 1 init binary
+/data/musl/install/opt/musl/bin/musl-gcc -Wall -Wextra -Werror -std=c11 -static init.c -L. -lstring_m -o init
+
+
+
+cat << 'EOF' > init.c
+/* ************************************************************************** */
+/*                                                                            */
+/*                                                        :::      ::::::::   */
+/*   init.c                                             :+:      :+:    :+:   */
+/*                                                    +:+ +:+         +:+     */
+/*   By: student <student@student.42.fr>            +#+  +:+       +#+        */
+/*                                                +#+#+#+#+#+   +#+           */
+/*   Created: 2026/11/22 14:01:00 by student           #+#    #+#             */
+/*   Updated: 2026/11/22 14:01:00 by student          ###   ########.fr       */
+/*                                                                            */
+/* ************************************************************************** */
+
+#include "string_m.h"
+#include <sys/mount.h>
+#include <unistd.h>
+#include <string.h>
+
+extern t_constraint_handler     set_constraint_handler_m(
+                                                                t_constraint_handler handler);
+
+static void     pid1_fault_handler(const char * restrict msg, void * restrict ptr,
+                                t_errno error)
+{
+        (void)ptr;
+        (void)error;
+        write(2, "PID 1 CONSTRAINT VIOLATION: ", 28);
+        if (msg)
+                write(2, msg, strlen(msg));
+        write(2, "\n", 1);
+}
+
+static void     pid1_shell_loop(void)
+{
+        t_string_mx     *cmd;
+        char            *buf;
+        ssize_t         n;
+        int                     cmp;
+
+        buf = malloc(256);
+        cmd = NULL;
+        strcreate_m(&cmd, "", 256, NULL);
+        while (buf && cmd)
+        {
+                write(1, "msh# ", 5);
+                n = read(0, buf, 255);
+                if (n <= 0)
+                        break ;
+                buf[n - 1] = '\0';
+                cstrcpy_m(cmd, buf);
+                if (cstrcmp_m(cmd, "help", &cmp) == 0 && cmp == 0)
+                        write(1, "Commands: help, status\n", 23);
+                else if (cstrcmp_m(cmd, "status", &cmp) == 0 && cmp == 0)
+                        write(1, "PID 1 running with musl + libstring_m\n", 38);
+                else
+                        write(1, "Unknown command\n", 16);
+        }
+}
+
+int     main(void)
+{
+        t_string_mx     *banner;
+        t_string_mx     *fmt;
+        const char      *out;
+        int                     cnt;
+
+        set_constraint_handler_m(pid1_fault_handler);
+        mount("proc", "/proc", "proc", 0, NULL);
+        mount("sysfs", "/sys", "sysfs", 0, NULL);
+        banner = NULL;
+        fmt = NULL;
+        out = NULL;
+        strcreate_m(&banner, "", 128, NULL);
+        strcreate_m(&fmt, "\n[BOOT] Secure UNIX PID=%d (%s)\n", 64, NULL);
+        sprintf_m(banner, fmt, &cnt, (int)getpid(), fmt);
+        if (cgetstr_m(banner, &out) == 0 && out)
+                write(1, out, strlen(out));
+        pid1_shell_loop();
+        return (0);
+}
+EOF
+
+
+/data/musl/install/opt/musl/bin/musl-gcc -Wall -Wextra -Werror -std=c11 -static init.c -L. -lstring_m -o init
+
+mkdir -p rootfs/proc rootfs/sys rootfs/dev && cp init rootfs/init && (cd rootfs && find . | cpio -o -H newc "
+
+sed -i 's/malloc(256)/malloc(512)/; s/read(0, buf, 255)/read(0, buf, 511)/' init.c
+
+/data/musl/install/opt/musl/bin/musl-gcc -Wall -Wextra -Werror -std=c11 -static init.c -L. -lstring_m -o init && \
+mkdir -p rootfs/proc rootfs/sys rootfs/dev && cp init rootfs/init && \
+(cd rootfs && find . | cpio -o -H newc | gzip > ../initramfs.cpio.gz) && \
+qemu-system-x86_64 -kernel /boot/vmlinuz -initrd initramfs.cpio.gz -nographic -append "console=ttyS0 quiet"
+
+## press Ctrl + A then x to quit msh

@@ -298,10 +298,3 @@ int	main(void)
 	return (0);
 }
 ```
-
-
-
-
-
-
-qemu-system-x86_64 -kernel /boot/vmlinuz -initrd initramfs.cpio.gz -nographic -append "console=ttyS0 quiet"

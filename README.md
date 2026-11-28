@@ -7,6 +7,12 @@ Specifications for Managed Strings, Second Edition:
 https://apps.dtic.mil/sti/tr/pdf/ADA528573.pdf
 
 
+Implementation attempt of Specifications for Managed Strings, Second Edition:
+
+
+https://mantellapical.blogspot.com/2026/10/you-can-have-bootable-proof-of-concept.html
+
+
 stricks libraries:
 
 
